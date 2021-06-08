@@ -57,6 +57,15 @@ module Sentry
         sentry_trace = env["HTTP_SENTRY_TRACE"]
         options = { name: scope.transaction_name, op: transaction_op }
         transaction = Sentry::Transaction.from_sentry_trace(sentry_trace, **options) if sentry_trace
+
+        rack_span = OpenTelemetry::Instrumentation::Rack.current_span if defined?(OpenTelemetry)
+
+        transaction = if sentry_trace
+          Sentry::Transaction.from_sentry_trace(sentry_trace, **options)
+        elsif rack_span
+          Sentry::Transaction.from_rack_span(rack_span, **options)
+        end
+
         Sentry.start_transaction(transaction: transaction, **options)
       end
 

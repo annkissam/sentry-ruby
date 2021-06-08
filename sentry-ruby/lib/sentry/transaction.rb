@@ -44,6 +44,18 @@ module Sentry
       new(trace_id: trace_id, parent_span_id: parent_span_id, parent_sampled: parent_sampled, hub: hub, **options)
     end
 
+    def self.from_rack_span(rack_span, hub: Sentry.get_current_hub, **options)
+      return unless hub.configuration.tracing_enabled?
+      return unless rack_span
+
+      trace_id = rack_span.context.trace_id.unpack1('H*')
+      span_id = rack_span.context.span_id.unpack1('H*')
+      parent_span_id = rack_span.parent_span_id.unpack1('H*')
+      parent_sampled = rack_span.context.trace_flags.sampled?
+
+      new(span_id: span_id, trace_id: trace_id, parent_span_id: parent_span_id, parent_sampled: parent_sampled, hub: hub, **options)
+    end
+
     def to_hash
       hash = super
       hash.merge!(name: @name, sampled: @sampled, parent_sampled: @parent_sampled)

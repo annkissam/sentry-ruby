@@ -7,7 +7,12 @@ module Sentry
     # middlewares can't be injected after initialize
     initializer "sentry.use_rack_middleware" do |app|
       # placed after all the file-sending middlewares so we can avoid unnecessary transactions
-      app.config.middleware.insert_after ActionDispatch::Executor, Sentry::Rails::CaptureExceptions
+      if defined?(OpenTelemetry)
+        app.config.middleware.insert_after OpenTelemetry::Instrumentation::Rack::Middlewares::TracerMiddleware, Sentry::Rails::CaptureExceptions
+      else
+        app.config.middleware.insert_after ActionDispatch::Executor, Sentry::Rails::CaptureExceptions
+      end
+
       # need to be placed at last to smuggle app exceptions via env
       app.config.middleware.use(Sentry::Rails::RescuedExceptionInterceptor)
     end

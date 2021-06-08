@@ -25,6 +25,7 @@ module Sentry
       description: nil,
       op: nil,
       status: nil,
+      span_id: nil,
       trace_id: nil,
       parent_span_id: nil,
       sampled: nil,
@@ -32,7 +33,7 @@ module Sentry
       timestamp: nil
     )
       @trace_id = trace_id || SecureRandom.uuid.delete("-")
-      @span_id = SecureRandom.hex(8)
+      @span_id = span_id || SecureRandom.hex(8)
       @parent_span_id = parent_span_id
       @sampled = sampled
       @start_timestamp = start_timestamp || Sentry.utc_now.to_f

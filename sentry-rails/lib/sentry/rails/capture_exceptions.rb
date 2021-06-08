@@ -38,7 +38,14 @@ module Sentry
           options.merge!(sampled: false)
         end
 
-        transaction = Sentry::Transaction.from_sentry_trace(sentry_trace, **options) if sentry_trace
+        rack_span = OpenTelemetry::Instrumentation::Rack.current_span if defined?(OpenTelemetry)
+
+        transaction = if sentry_trace
+          Sentry::Transaction.from_sentry_trace(sentry_trace, **options)
+        elsif rack_span
+          Sentry::Transaction.from_rack_span(rack_span, **options)
+        end
+
         Sentry.start_transaction(transaction: transaction, **options)
       end
     end
