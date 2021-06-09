@@ -40,10 +40,10 @@ module Sentry
 
         rack_span = OpenTelemetry::Instrumentation::Rack.current_span if defined?(OpenTelemetry)
 
-        transaction = if sentry_trace
-          Sentry::Transaction.from_sentry_trace(sentry_trace, **options)
-        elsif rack_span
+        transaction = if rack_span
           Sentry::Transaction.from_rack_span(rack_span, **options)
+        elsif sentry_trace
+          Sentry::Transaction.from_sentry_trace(sentry_trace, **options)
         end
 
         Sentry.start_transaction(transaction: transaction, **options)
