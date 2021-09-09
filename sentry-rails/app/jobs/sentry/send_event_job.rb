@@ -9,7 +9,14 @@ if defined?(ActiveJob)
 
     class SendEventJob < parent_job
       # the event argument is usually large and creates noise
-      self.log_arguments = false if respond_to?(:log_arguments=)
+      #
+      # to enable argument logging anyway, define class method
+      #   `log_sentry_arguments?` to be truthy in your `ApplicationRecord`
+      def self.log_arguments?
+        return false unless singleton_class.method_defined?(:log_sentry_arguments?)
+
+        log_sentry_arguments?
+      end
 
       # this will prevent infinite loop when there's an issue deserializing SentryJob
       if respond_to?(:discard_on)
