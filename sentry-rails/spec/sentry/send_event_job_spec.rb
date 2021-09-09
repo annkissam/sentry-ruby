@@ -9,6 +9,62 @@ RSpec.describe "Sentry::SendEventJob" do
     Sentry.get_current_client.transport
   end
 
+  describe '.log_arguments?' do
+    subject { Sentry::SendEventJob.log_arguments? }
+
+    context 'when ApplicationJob is not defined' do
+      before do
+        make_basic_app
+      end
+
+      it { is_expected.to eq(false) }
+    end
+
+    context 'when ApplicationJob is defined' do
+      before do
+        class ApplicationJob < ActiveJob::Base; end
+        reload_send_event_job
+        make_basic_app
+      end
+
+      after do
+        Object.send(:remove_const, "ApplicationJob")
+      end
+
+      context 'and ApplicationJob.log_sentry_arguments? is not defined' do
+        it { is_expected.to eq(false) }
+      end
+
+      context 'and ApplicationJob.log_sentry_arguments? is false' do
+        before do
+          class ApplicationJob < ActiveJob::Base
+            def self.log_sentry_arguments?
+              false
+            end
+          end
+          reload_send_event_job
+          make_basic_app
+        end
+
+        it { is_expected.to eq(false) }
+      end
+
+      context 'and ApplicationJob.log_sentry_arguments? is true' do
+        before do
+          class ApplicationJob < ActiveJob::Base
+            def self.log_sentry_arguments?
+              true
+            end
+          end
+          reload_send_event_job
+          make_basic_app
+        end
+
+        it { is_expected.to eq(true) }
+      end
+    end
+  end
+
   context "when ActiveJob is not loaded" do
     before do
       TempActiveJob = ActiveJob
