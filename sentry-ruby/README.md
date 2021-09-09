@@ -141,6 +141,21 @@ We also provide integrations with popular frameworks/libraries with the related 
 
 You're all set - but there's a few more settings you may want to know about too!
 
+#### Logging with ActiveJob
+
+By default, `Sentry::SendEventJob` will omit its arguments, since it amounts to a large and noisy Hash, which the Sentry frontend is designed to parse.
+If you want the arguments to be logged, `ApplicationJob.log_sentry_arguments?` must be truthy.
+
+For example, the following `ApplicationJob` will only log Sentry arguments if ActiveJob's logger's level is debug or lower (i.e. more verbose).
+
+```ruby
+class ApplicationJob < ActiveJob::Base
+  def self.log_sentry_arguments?
+    logger.level <= ::Logger::DEBUG
+  end
+end
+```
+
 #### Blocking v.s. Non-blocking
 
 `sentry-ruby` sends events asynchronously by default. The functionality works like this:
