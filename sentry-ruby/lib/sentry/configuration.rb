@@ -63,6 +63,9 @@ module Sentry
     # - :active_support_logger
     attr_reader :breadcrumbs_logger
 
+    # Whether to capture local variables from the raised exception's frame. Default is false.
+    attr_accessor :capture_exception_frame_locals
+
     # Max number of breadcrumbs a breadcrumb buffer can hold
     attr_accessor :max_breadcrumbs
 
@@ -89,7 +92,7 @@ module Sentry
     # You should probably append to this rather than overwrite it.
     attr_accessor :excluded_exceptions
 
-    # Boolean to check nested exceptions when deciding if to exclude. Defaults to false
+    # Boolean to check nested exceptions when deciding if to exclude. Defaults to true
     attr_accessor :inspect_exception_causes_for_exclusion
     alias inspect_exception_causes_for_exclusion? inspect_exception_causes_for_exclusion
 
@@ -188,6 +191,7 @@ module Sentry
       self.max_breadcrumbs = BreadcrumbBuffer::DEFAULT_SIZE
       self.breadcrumbs_logger = []
       self.context_lines = 3
+      self.capture_exception_frame_locals = false
       self.environment = environment_from_env
       self.enabled_environments = []
       self.exclude_loggers = []
@@ -198,7 +202,6 @@ module Sentry
       self.project_root = Dir.pwd
       self.propagate_traces = true
 
-      self.release = detect_release
       self.sample_rate = 1.0
       self.send_modules = true
       self.send_default_pii = false
@@ -314,16 +317,27 @@ module Sentry
       )
     end
 
-    private
-
     def detect_release
-      detect_release_from_env ||
+      return unless sending_allowed?
+
+      self.release ||= detect_release_from_env ||
         detect_release_from_git ||
         detect_release_from_capistrano ||
         detect_release_from_heroku
     rescue => e
       log_error("Error detecting release", e, debug: debug)
     end
+
+    def csp_report_uri
+      if dsn && dsn.valid?
+        uri = dsn.csp_report_uri
+        uri += "&sentry_release=#{CGI.escape(release)}" if release && !release.empty?
+        uri += "&sentry_environment=#{CGI.escape(environment)}" if environment && !environment.empty?
+        uri
+      end
+    end
+
+    private
 
     def excluded_exception?(incoming_exception)
       excluded_exception_classes.any? do |excluded_exception|
@@ -404,7 +418,7 @@ module Sentry
     def sample_allowed?
       return true if sample_rate == 1.0
 
-      if Random::DEFAULT.rand >= sample_rate
+      if Random.rand >= sample_rate
         @errors << "Excluded by random sample"
         false
       else
@@ -420,7 +434,7 @@ module Sentry
     end
 
     def environment_from_env
-      ENV['SENTRY_CURRENT_ENV'] || ENV['SENTRY_ENVIRONMENT'] || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'default'
+      ENV['SENTRY_CURRENT_ENV'] || ENV['SENTRY_ENVIRONMENT'] || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'development'
     end
 
     def server_name_from_env

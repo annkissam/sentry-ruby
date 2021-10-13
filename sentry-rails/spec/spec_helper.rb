@@ -1,4 +1,5 @@
 require "bundler/setup"
+require "debug"
 require "pry"
 
 require "sentry-ruby"
@@ -12,7 +13,7 @@ SimpleCov.start do
   coverage_dir File.join(__FILE__, "../../coverage")
 end
 
-if ENV["CI"]
+if ENV["CI"] && ENV["CODECOV"] == "1"
   require 'codecov'
   SimpleCov.formatter = SimpleCov::Formatter::Codecov
 end
@@ -41,6 +42,7 @@ RSpec.configure do |config|
 
   config.after :each do
     Sentry::Rails::Tracing.unsubscribe_tracing_events
+    expect(Sentry::Rails::Tracing.subscribed_tracing_events).to be_empty
     Sentry::Rails::Tracing.remove_active_support_notifications_patch
   end
 
@@ -93,14 +95,4 @@ def reload_send_event_job
   Sentry.send(:remove_const, "SendEventJob") if defined?(Sentry::SendEventJob)
   expect(defined?(Sentry::SendEventJob)).to eq(nil)
   load File.join(Dir.pwd, "app", "jobs", "sentry", "send_event_job.rb")
-end
-
-def perform_basic_setup
-  Sentry.init do |config|
-    config.dsn = DUMMY_DSN
-    config.logger = ::Logger.new(nil)
-    config.transport.transport_class = Sentry::DummyTransport
-    # for sending events synchronously
-    config.background_worker_threads = 0
-  end
 end

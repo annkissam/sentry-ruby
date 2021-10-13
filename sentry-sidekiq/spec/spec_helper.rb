@@ -1,5 +1,6 @@
 require "bundler/setup"
 require "pry"
+require "debug" if RUBY_VERSION.to_f >= 2.6
 
 # this enables sidekiq's server mode
 require "sidekiq/cli"
@@ -15,7 +16,7 @@ SimpleCov.start do
   coverage_dir File.join(__FILE__, "../../coverage")
 end
 
-if ENV["CI"]
+if ENV["CI"] && ENV["CODECOV"] == "1"
   require 'codecov'
   SimpleCov.formatter = SimpleCov::Formatter::Codecov
 end
@@ -132,12 +133,41 @@ class ReportingWorker
   end
 end
 
-def process_job(processor, klass)
-  msg = Sidekiq.dump_json(jid: "123123", class: klass)
-  job = Sidekiq::BasicFetch::UnitOfWork.new('queue:default', msg)
-  processor.instance_variable_set(:'@job', job)
+class RetryWorker
+  include Sidekiq::Worker
 
-  processor.send(:process, job)
+  sidekiq_options retry: 1
+
+  def perform
+    1/0
+  end
+end
+
+class ZeroRetryWorker
+  include Sidekiq::Worker
+
+  sidekiq_options retry: 0
+
+  def perform
+    1/0
+  end
+end
+
+def execute_worker(processor, klass, **options)
+  klass_options = klass.sidekiq_options_hash || {}
+
+  # for Ruby < 2.6
+  klass_options.each do |k, v|
+    options[k.to_sym] = v
+  end
+
+  msg = Sidekiq.dump_json(jid: "123123", class: klass, args: [], **options)
+  work = Sidekiq::BasicFetch::UnitOfWork.new('queue:default', msg)
+  process_work(processor, work)
+end
+
+def process_work(processor, work)
+  processor.send(:process, work)
 rescue StandardError
   # do nothing
 end

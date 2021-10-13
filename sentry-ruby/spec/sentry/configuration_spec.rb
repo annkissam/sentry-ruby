@@ -1,6 +1,39 @@
 require 'spec_helper'
 
 RSpec.describe Sentry::Configuration do
+  describe "#csp_report_uri" do
+    it "returns nil if the dsn is not present" do
+      expect(subject.csp_report_uri).to eq(nil)
+    end
+
+    it "returns nil if the dsn is not valid" do
+      subject.dsn = "foo"
+      expect(subject.csp_report_uri).to eq(nil)
+    end
+
+    context "when the DSN is present" do
+      before do
+        subject.release = nil
+        subject.environment = nil
+        subject.dsn = DUMMY_DSN
+      end
+
+      it "returns the uri" do
+        expect(subject.csp_report_uri).to eq("http://sentry.localdomain/api/42/security/?sentry_key=12345")
+      end
+
+      it "adds sentry_release param when there's release information" do
+        subject.release = "test-release"
+        expect(subject.csp_report_uri).to eq("http://sentry.localdomain/api/42/security/?sentry_key=12345&sentry_release=test-release")
+      end
+
+      it "adds sentry_environment param when there's environment information" do
+        subject.environment = "test-environment"
+        expect(subject.csp_report_uri).to eq("http://sentry.localdomain/api/42/security/?sentry_key=12345&sentry_environment=test-environment")
+      end
+    end
+  end
+
   describe "#tracing_enabled?" do
     context "when sending not allowed" do
       before do
@@ -116,8 +149,8 @@ RSpec.describe Sentry::Configuration do
       ENV.delete('RACK_ENV')
     end
 
-    it 'defaults to "default"' do
-      expect(subject.environment).to eq('default')
+    it 'defaults to "development"' do
+      expect(subject.environment).to eq('development')
     end
 
     it 'uses `SENTRY_CURRENT_ENV` env variable' do
@@ -151,141 +184,6 @@ RSpec.describe Sentry::Configuration do
       ENV['RACK_ENV'] = 'set-with-rack-env'
 
       expect(subject.environment).to eq('set-with-rack-env')
-    end
-  end
-
-  context 'being initialized without a release' do
-    let(:fake_root) { "/tmp/sentry/" }
-
-    before do
-      allow(File).to receive(:directory?).and_return(false)
-      allow_any_instance_of(described_class).to receive(:project_root).and_return(fake_root)
-    end
-
-    it 'defaults to nil' do
-      expect(subject.release).to eq(nil)
-    end
-
-    it 'uses `SENTRY_RELEASE` env variable' do
-      ENV['SENTRY_RELEASE'] = 'v1'
-
-      expect(subject.release).to eq('v1')
-
-      ENV.delete('SENTRY_CURRENT_ENV')
-    end
-
-    context "when git is available" do
-      before do
-        allow(File).to receive(:directory?).and_return(false)
-        allow(File).to receive(:directory?).with(".git").and_return(true)
-      end
-      it 'gets release from git' do
-        allow(Sentry).to receive(:`).with("git rev-parse --short HEAD 2>&1").and_return("COMMIT_SHA")
-
-        expect(subject.release).to eq('COMMIT_SHA')
-      end
-    end
-
-    context "when Capistrano is available" do
-      let(:revision) { "2019010101000" }
-
-      before do
-        Dir.mkdir(fake_root) unless Dir.exist?(fake_root)
-        File.write(filename, file_content)
-      end
-
-      after do
-        File.delete(filename)
-        Dir.delete(fake_root)
-      end
-
-      context "when the REVISION file is present" do
-        let(:filename) do
-          File.join(fake_root, "REVISION")
-        end
-        let(:file_content) { revision }
-
-        it "gets release from the REVISION file" do
-          expect(subject.release).to eq(revision)
-        end
-      end
-
-      context "when the revisions.log file is present" do
-        let(:filename) do
-          File.join(fake_root, "..", "revisions.log")
-        end
-        let(:file_content) do
-          "Branch master (at COMMIT_SHA) deployed as release #{revision} by alice"
-        end
-
-        it "gets release from the REVISION file" do
-          expect(subject.release).to eq(revision)
-        end
-      end
-    end
-
-    context "when running on heroku" do
-      before do
-        allow(File).to receive(:directory?).and_return(false)
-        allow(File).to receive(:directory?).with("/etc/heroku").and_return(true)
-      end
-
-      context "when it's on heroku ci" do
-        it "returns nil" do
-          begin
-            original_ci_val = ENV["CI"]
-            ENV["CI"] = "true"
-
-            expect(subject.release).to eq(nil)
-          ensure
-            ENV["CI"] = original_ci_val
-          end
-        end
-      end
-
-      context "when it's not on heroku ci" do
-        around do |example|
-          begin
-            original_ci_val = ENV["CI"]
-            ENV["CI"] = nil
-
-            example.run
-          ensure
-            ENV["CI"] = original_ci_val
-          end
-        end
-
-        it "returns nil + logs an warning if HEROKU_SLUG_COMMIT is not set" do
-          logger = double("logger")
-          expect(::Sentry::Logger).to receive(:new).and_return(logger)
-          expect(logger).to receive(:warn).with(Sentry::LOGGER_PROGNAME) { described_class::HEROKU_DYNO_METADATA_MESSAGE }
-
-          expect(described_class.new.release).to eq(nil)
-        end
-
-        it "returns HEROKU_SLUG_COMMIT" do
-          begin
-            ENV["HEROKU_SLUG_COMMIT"] = "REVISION"
-
-            expect(subject.release).to eq("REVISION")
-          ensure
-            ENV["HEROKU_SLUG_COMMIT"] = nil
-          end
-        end
-      end
-
-      context "when having an error detecting the release" do
-        it "logs the error" do
-          string_io = StringIO.new
-          logger = Logger.new(string_io)
-          allow_any_instance_of(described_class).to receive(:logger).and_return(logger)
-          allow_any_instance_of(described_class).to receive(:detect_release_from_git).and_raise(TypeError.new)
-
-          subject
-
-          expect(string_io.string).to include("ERROR -- sentry: Error detecting release: TypeError")
-        end
-      end
     end
   end
 
@@ -330,13 +228,13 @@ RSpec.describe Sentry::Configuration do
     end
 
     it 'captured_allowed false when sampled' do
-      allow(Random::DEFAULT).to receive(:rand).and_return(0.76)
+      allow(Random).to receive(:rand).and_return(0.76)
       expect(subject.sending_allowed?).to eq(false)
       expect(subject.errors).to eq(["Excluded by random sample"])
     end
 
     it 'captured_allowed true when not sampled' do
-      allow(Random::DEFAULT).to receive(:rand).and_return(0.74)
+      allow(Random).to receive(:rand).and_return(0.74)
       expect(subject.sending_allowed?).to eq(true)
     end
   end

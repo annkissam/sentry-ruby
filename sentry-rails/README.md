@@ -81,5 +81,17 @@ Currently, it tracks the following Rails instrumentation events:
 
 To lean more about performance monitoring, please visit the [official documentation](https://docs.sentry.io/platforms/ruby/guides/rails/performance/).
 
+#### Logging with ActiveJob
 
+By default, `Sentry::SendEventJob` will omit its arguments, since it amounts to a large and noisy Hash, which the Sentry frontend is designed to parse.
+If you want the arguments to be logged, `ApplicationJob.log_sentry_arguments?` must be truthy.
 
+For example, the following `ApplicationJob` will only log Sentry arguments if ActiveJob's logger's level is debug or lower (i.e. more verbose).
+
+```ruby
+class ApplicationJob < ActiveJob::Base
+  def self.log_sentry_arguments?
+    logger.level <= ::Logger::DEBUG
+  end
+end
+```

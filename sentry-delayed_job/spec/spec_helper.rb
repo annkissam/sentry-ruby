@@ -15,7 +15,7 @@ SimpleCov.start do
   coverage_dir File.join(__FILE__, "../../coverage")
 end
 
-if ENV["CI"]
+if ENV["CI"] && ENV["CODECOV"] == "1"
   require 'codecov'
   SimpleCov.formatter = SimpleCov::Formatter::Codecov
 end
@@ -76,5 +76,6 @@ def perform_basic_setup
     config.logger = ::Logger.new(nil)
     config.background_worker_threads = 0
     config.transport.transport_class = Sentry::DummyTransport
+    yield(config) if block_given?
   end
 end

@@ -143,6 +143,24 @@ RSpec.describe Sentry::Hub do
       end.to change { transport.events.count }.by(1)
     end
 
+    it "takes backtrace option" do
+      event = subject.capture_message(message, backtrace: ["#{__FILE__}:10:in `foo'"])
+      event_hash = event.to_hash
+      expect(event_hash.dig(:threads, :values, 0, :stacktrace, :frames, 0, :function)).to eq("foo")
+    end
+
+    it "raises error when passing a non-string object" do
+      expect do
+        subject.capture_message(1)
+      end.to raise_error(ArgumentError, 'expect the argument to be a String, got Integer (1)')
+    end
+
+    it "assigns default backtrace with caller" do
+      event = subject.capture_message(message)
+      event_hash = event.to_hash
+      expect(event_hash.dig(:threads, :values, 0, :stacktrace, :frames, 0, :function)).to eq("<main>")
+    end
+
     it_behaves_like "capture_helper" do
       let(:capture_helper) { :capture_message }
       let(:capture_subject) { message }
@@ -290,6 +308,18 @@ RSpec.describe Sentry::Hub do
         end
       end
     end
+
+    context "when the SDK is not activated in the current environment" do
+      before do
+        configuration.enabled_environments = ["production"]
+      end
+
+      it "doesn't record breadcrumbs" do
+        subject.add_breadcrumb(new_breadcrumb)
+
+        expect(peek_crumb).to eq(nil)
+      end
+    end
   end
 
   describe "#new_from_top" do
@@ -395,6 +425,53 @@ RSpec.describe Sentry::Hub do
       event = subject.capture_message("Test message")
 
       expect(subject.last_event_id).to eq(event.event_id)
+    end
+  end
+
+  describe "#with_background_worker_disabled" do
+    before do
+      configuration.background_worker_threads = 5
+      Sentry.background_worker = Sentry::BackgroundWorker.new(configuration)
+      configuration.before_send = lambda do |event, _hint|
+        sleep 0.5
+        event
+      end
+    end
+
+    after do
+      Sentry.background_worker = nil
+    end
+
+    it "disables async event sending temporarily" do
+      subject.with_background_worker_disabled do
+        subject.capture_message("foo")
+      end
+
+      expect(transport.events.count).to eq(1)
+    end
+
+    it "returns the original execution result" do
+      result = subject.with_background_worker_disabled do
+        "foo"
+      end
+
+      expect(result).to eq("foo")
+    end
+
+    it "doesn't interfere events outside of the block" do
+      subject.with_background_worker_disabled {}
+
+      subject.capture_message("foo")
+      expect(transport.events.count).to eq(0)
+    end
+
+    it "resumes the backgrounding state even with exception" do
+      subject.with_background_worker_disabled do
+        raise "foo"
+      end rescue nil
+
+      subject.capture_message("foo")
+      expect(transport.events.count).to eq(0)
     end
   end
 end

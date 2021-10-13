@@ -26,7 +26,12 @@ module Sentry
     def capture_event(event, scope, hint = {})
       return unless configuration.sending_allowed?
 
-      scope.apply_to_event(event, hint)
+      event = scope.apply_to_event(event, hint)
+
+      if event.nil?
+        log_info("Discarded event because one of the event processors returned nil")
+        return
+      end
 
       if async_block = configuration.async
         dispatch_async_event(async_block, event, hint)
@@ -52,10 +57,10 @@ module Sentry
       end
     end
 
-    def event_from_message(message, hint = {})
+    def event_from_message(message, hint = {}, backtrace: nil)
       integration_meta = Sentry.integrations[hint[:integration]]
       event = Event.new(configuration: configuration, integration_meta: integration_meta, message: message)
-      event.add_threads_interface(backtrace: caller)
+      event.add_threads_interface(backtrace: backtrace || caller)
       event
     end
 

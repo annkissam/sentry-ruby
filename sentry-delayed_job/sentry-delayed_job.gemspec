@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Sentry Team"]
   spec.description = spec.summary = "A gem that provides DelayedJob integration for the Sentry error logger"
   spec.email = "accounts@sentry.io"
-  spec.license = 'Apache-2.0'
+  spec.license = 'MIT'
   spec.homepage = "https://github.com/getsentry/sentry-ruby"
 
   spec.platform = Gem::Platform::RUBY
@@ -22,5 +22,6 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{^exe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "sentry-ruby-core", "~> 4.5.0"
+  spec.add_dependency "sentry-ruby-core", "~> 4.7.0"
+  spec.add_dependency "delayed_job", ">= 4.0"
 end
