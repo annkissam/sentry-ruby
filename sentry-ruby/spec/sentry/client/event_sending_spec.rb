@@ -3,6 +3,7 @@ require 'spec_helper'
 RSpec.describe Sentry::Client do
   let(:configuration) do
     Sentry::Configuration.new.tap do |config|
+      config.logger = Logger.new(nil)
       config.dsn = DUMMY_DSN
       config.transport.transport_class = Sentry::DummyTransport
     end
@@ -17,6 +18,40 @@ RSpec.describe Sentry::Client do
     let(:message) { "Test message" }
     let(:scope) { Sentry::Scope.new }
     let(:event) { subject.event_from_message(message) }
+
+    context "with sample_rate set" do
+      before do
+        configuration.sample_rate = 0.5
+        configuration.background_worker_threads = 0
+      end
+
+      context "with Event" do
+        it "sends the event when it's sampled" do
+          allow(Random).to receive(:rand).and_return(0.49)
+          subject.capture_event(event, scope)
+          expect(subject.transport.events.count).to eq(1)
+        end
+
+        it "doesn't send the event when it's not sampled" do
+          allow(Random).to receive(:rand).and_return(0.51)
+          subject.capture_event(event, scope)
+          expect(subject.transport).to have_recorded_lost_event(:sample_rate, 'event')
+          expect(subject.transport.events.count).to eq(0)
+        end
+      end
+
+      context "with TransactionEvent" do
+        require "debug"
+        it "ignores the sampling" do
+          transaction_event = subject.event_from_transaction(Sentry::Transaction.new(hub: hub))
+          allow(Random).to receive(:rand).and_return(0.51)
+
+          subject.capture_event(transaction_event, scope)
+
+          expect(subject.transport.events.count).to eq(1)
+        end
+      end
+    end
 
     context 'with config.async set' do
       let(:async_block) do
@@ -51,8 +86,8 @@ RSpec.describe Sentry::Client do
         expect(returned).to eq(nil)
       end
 
-      context "with false as value (the legacy way to disable it)" do
-        let(:async_block) { false }
+      context "with nil as value (the legacy way to disable it)" do
+        let(:async_block) { nil }
 
         it "doesn't cause any issue" do
           returned = subject.capture_event(event, scope, { background: false })
@@ -121,6 +156,17 @@ RSpec.describe Sentry::Client do
 
           expect(transport.events.count).to eq(1)
         end
+      end
+
+      it "records queue overflow" do
+        allow(Sentry.background_worker).to receive(:perform).and_return(false)
+
+        subject.capture_event(event, scope)
+        expect(subject.transport).to have_recorded_lost_event(:queue_overflow, 'event')
+
+        expect(transport.events.count).to eq(0)
+        sleep(0.2)
+        expect(transport.events.count).to eq(0)
       end
     end
   end
@@ -225,6 +271,21 @@ RSpec.describe Sentry::Client do
         configuration.async = prior_async
       end
 
+      context "when scope.apply_to_event returns nil" do
+        before do
+          scope.add_event_processor do |event, hint|
+            nil
+          end
+        end
+
+        it "discards the event and logs a info" do
+          expect(subject.capture_event(event, scope)).to be_nil
+
+          expect(subject.transport).to have_recorded_lost_event(:event_processor, 'event')
+          expect(string_io.string).to match(/Discarded event because one of the event processors returned nil/)
+        end
+      end
+
       context "when scope.apply_to_event fails" do
         before do
           scope.add_event_processor do
@@ -261,6 +322,7 @@ RSpec.describe Sentry::Client do
         it "swallows and logs Sentry::ExternalError (caused by transport's networking error)" do
           expect(subject.capture_event(event, scope)).to be_nil
 
+          expect(subject.transport).to have_recorded_lost_event(:network_error, 'event')
           expect(string_io.string).to match(/Event sending failed: Failed to open TCP connection/)
           expect(string_io.string).to match(/Unreported Event: Test message/)
           expect(string_io.string).to match(/Event capturing failed: Failed to open TCP connection/)
@@ -285,6 +347,7 @@ RSpec.describe Sentry::Client do
           expect(subject.capture_event(event, scope)).to be_a(Sentry::Event)
           sleep(0.2)
 
+          expect(subject.transport).to have_recorded_lost_event(:network_error, 'event')
           expect(string_io.string).to match(/Event sending failed: Failed to open TCP connection/)
           expect(string_io.string).to match(/Unreported Event: Test message/)
         end
@@ -368,6 +431,19 @@ RSpec.describe Sentry::Client do
             expect(string_io.string).to match(/Event sending failed: TypeError/)
             expect(string_io.string).to match(__FILE__)
           end
+        end
+      end
+
+      context "before_send returns nil" do
+        before do
+          configuration.before_send = lambda do |_event, _hint|
+            nil
+          end
+        end
+
+        it "records lost event" do
+          subject.send_event(event)
+          expect(subject.transport).to have_recorded_lost_event(:before_send, 'event')
         end
       end
     end

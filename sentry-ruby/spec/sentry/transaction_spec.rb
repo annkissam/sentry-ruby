@@ -338,6 +338,15 @@ RSpec.describe Sentry::Transaction do
       expect(event[:spans]).to be_empty
     end
 
+    it "doesn't override the event's transaction attribute with the scope's" do
+      subject.finish
+
+      expect(events.count).to eq(1)
+      event = events.last.to_hash
+
+      expect(event[:transaction]).to eq("foo")
+    end
+
     describe "hub selection" do
       it "prioritizes the optional hub argument and uses it to submit the transaction" do
         expect(another_hub).to receive(:capture_event)
@@ -361,6 +370,11 @@ RSpec.describe Sentry::Transaction do
         subject.finish
 
         expect(events.count).to eq(0)
+      end
+
+      it "records lost event" do
+        subject.finish
+        expect(subject.hub.current_client.transport).to have_recorded_lost_event(:sample_rate, 'transaction')
       end
     end
 
