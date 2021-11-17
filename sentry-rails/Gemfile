@@ -24,12 +24,14 @@ gem "sidekiq"
 gem "rspec", "~> 3.0"
 gem "rspec-retry"
 gem "rspec-rails", "~> 4.0"
-gem "codecov", "0.2.12"
+gem 'simplecov'
+gem "simplecov-cobertura", "~> 1.4"
+gem "rexml"
 
 gem "rake", "~> 12.0"
 
 gem "object_tracer"
-gem "debug", github: "ruby/debug" if RUBY_VERSION.to_f >= 2.6
+gem "debug", github: "ruby/debug", platform: :ruby if RUBY_VERSION.to_f >= 2.6
 gem "pry"
 
 gem "benchmark-ips"

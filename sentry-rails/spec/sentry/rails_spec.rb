@@ -9,10 +9,6 @@ RSpec.describe Sentry::Rails, type: :request do
     transport.events.last.to_json_compatible
   end
 
-  after do
-    transport.events = []
-  end
-
   context "with simplist config" do
     before do
       make_basic_app
@@ -24,9 +20,10 @@ RSpec.describe Sentry::Rails, type: :request do
 
     it "inserts middleware to a correct position" do
       app = Rails.application
-      index_of_executor = app.middleware.find_index { |m| m == ActionDispatch::Executor }
+      index_of_executor = app.middleware.find_index { |m| m == ActionDispatch::ShowExceptions }
       expect(app.middleware.find_index(Sentry::Rails::CaptureExceptions)).to eq(index_of_executor + 1)
-      expect(app.middleware.find_index(Sentry::Rails::RescuedExceptionInterceptor)).to eq(app.middleware.count - 1)
+      index_of_debug_exceptions = app.middleware.find_index { |m| m == ActionDispatch::DebugExceptions }
+      expect(app.middleware.find_index(Sentry::Rails::RescuedExceptionInterceptor)).to eq(index_of_debug_exceptions + 1)
     end
 
     it "inserts a callback to disable background_worker for the runner mode" do
@@ -160,19 +157,15 @@ RSpec.describe Sentry::Rails, type: :request do
     end
 
     it "doesn't filters exception backtrace if backtrace_cleanup_callback is overridden" do
-      original_cleanup_callback = Sentry.configuration.backtrace_cleanup_callback
-
-      begin
-        Sentry.configuration.backtrace_cleanup_callback = nil
-
-        get "/view_exception"
-
-        traces = event.dig("exception", "values", 0, "stacktrace", "frames")
-        expect(traces.dig(-1, "filename")).to eq("inline template")
-        expect(traces.dig(-1, "function")).not_to be_nil
-      ensure
-        Sentry.configuration.backtrace_cleanup_callback = original_cleanup_callback
+      make_basic_app do |config|
+        config.backtrace_cleanup_callback = lambda { |backtrace| backtrace }
       end
+
+      get "/view_exception"
+
+      traces = event.dig("exception", "values", 0, "stacktrace", "frames")
+      expect(traces.dig(-1, "filename")).to eq("inline template")
+      expect(traces.dig(-1, "function")).not_to be_nil
     end
 
     context "with config.exceptions_app = self.routes" do

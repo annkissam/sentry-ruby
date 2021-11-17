@@ -37,8 +37,11 @@ module Sentry
     def server
       server = "#{scheme}://#{host}"
       server += ":#{port}" unless port == PORT_MAP[scheme]
-      server += path
       server
+    end
+
+    def csp_report_uri
+      "#{server}/api/#{project_id}/security/?sentry_key=#{public_key}"
     end
 
     def envelope_endpoint

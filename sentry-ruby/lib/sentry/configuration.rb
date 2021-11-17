@@ -1,13 +1,16 @@
 require "concurrent/utility/processor_counter"
 
 require "sentry/utils/exception_cause_chain"
+require 'sentry/utils/custom_inspection'
 require "sentry/dsn"
+require "sentry/release_detector"
 require "sentry/transport/configuration"
 require "sentry/linecache"
 require "sentry/interfaces/stacktrace_builder"
 
 module Sentry
   class Configuration
+    include CustomInspection
     include LoggingHelper
     # Directories to be recognized as part of your app. e.g. if you
     # have an `engines` dir at the root of your project, you may want
@@ -63,6 +66,9 @@ module Sentry
     # - :active_support_logger
     attr_reader :breadcrumbs_logger
 
+    # Whether to capture local variables from the raised exception's frame. Default is false.
+    attr_accessor :capture_exception_frame_locals
+
     # Max number of breadcrumbs a breadcrumb buffer can hold
     attr_accessor :max_breadcrumbs
 
@@ -89,7 +95,7 @@ module Sentry
     # You should probably append to this rather than overwrite it.
     attr_accessor :excluded_exceptions
 
-    # Boolean to check nested exceptions when deciding if to exclude. Defaults to false
+    # Boolean to check nested exceptions when deciding if to exclude. Defaults to true
     attr_accessor :inspect_exception_causes_for_exclusion
     alias inspect_exception_causes_for_exclusion? inspect_exception_causes_for_exclusion
 
@@ -104,7 +110,7 @@ module Sentry
 
     # Project directory root for in_app detection. Could be Rails root, etc.
     # Set automatically for Rails.
-    attr_reader :project_root
+    attr_accessor :project_root
 
     # Insert sentry-trace to outgoing requests' headers
     attr_accessor :propagate_traces
@@ -154,6 +160,10 @@ module Sentry
     # ```
     attr_accessor :traces_sampler
 
+    # Send diagnostic client reports about dropped events, true by default
+    # tries to attach to an existing envelope max once every 30s
+    attr_accessor :send_client_reports
+
     # these are not config options
     attr_reader :errors, :gem_specs
 
@@ -177,17 +187,21 @@ module Sentry
 
     LOG_PREFIX = "** [Sentry] ".freeze
     MODULE_SEPARATOR = "::".freeze
+    SKIP_INSPECTION_ATTRIBUTES = [:@linecache, :@stacktrace_builder]
 
     # Post initialization callbacks are called at the end of initialization process
     # allowing extending the configuration of sentry-ruby by multiple extensions
     @@post_initialization_callbacks = []
 
     def initialize
+      self.app_dirs_pattern = nil
       self.debug = false
       self.background_worker_threads = Concurrent.processor_count
+      self.backtrace_cleanup_callback = nil
       self.max_breadcrumbs = BreadcrumbBuffer::DEFAULT_SIZE
       self.breadcrumbs_logger = []
       self.context_lines = 3
+      self.capture_exception_frame_locals = false
       self.environment = environment_from_env
       self.enabled_environments = []
       self.exclude_loggers = []
@@ -198,17 +212,19 @@ module Sentry
       self.project_root = Dir.pwd
       self.propagate_traces = true
 
-      self.release = detect_release
       self.sample_rate = 1.0
       self.send_modules = true
       self.send_default_pii = false
       self.skip_rake_integration = false
+      self.send_client_reports = true
       self.trusted_proxies = []
       self.dsn = ENV['SENTRY_DSN']
       self.server_name = server_name_from_env
 
-      self.before_send = false
+      self.before_send = nil
       self.rack_env_whitelist = RACK_ENV_WHITELIST_DEFAULT
+      self.traces_sample_rate = nil
+      self.traces_sampler = nil
 
       @transport = Transport::Configuration.new
       @gem_specs = Hash[Gem::Specification.map { |spec| [spec.name, spec.version.to_s] }] if Gem::Specification.respond_to?(:map)
@@ -217,18 +233,13 @@ module Sentry
     end
 
     def dsn=(value)
-      return if value.nil? || value.empty?
-
-      @dsn = DSN.new(value)
+      @dsn = init_dsn(value)
     end
 
     alias server= dsn=
 
-
     def async=(value)
-      if value && !value.respond_to?(:call)
-        raise(ArgumentError, "async must be callable")
-      end
+      check_callable!("async", value)
 
       @async = value
     end
@@ -247,17 +258,13 @@ module Sentry
     end
 
     def before_send=(value)
-      unless value == false || value.respond_to?(:call)
-        raise ArgumentError, "before_send must be callable (or false to disable)"
-      end
+      check_callable!("before_send", value)
 
       @before_send = value
     end
 
     def before_breadcrumb=(value)
-      unless value.nil? || value.respond_to?(:call)
-        raise ArgumentError, "before_breadcrumb must be callable (or nil to disable)"
-      end
+      check_callable!("before_breadcrumb", value)
 
       @before_breadcrumb = value
     end
@@ -269,18 +276,18 @@ module Sentry
     def sending_allowed?
       @errors = []
 
-      valid? &&
-        capture_in_environment? &&
-        sample_allowed?
+      valid? && capture_in_environment?
+    end
+
+    def sample_allowed?
+      return true if sample_rate == 1.0
+
+      Random.rand < sample_rate
     end
 
     def error_messages
       @errors = [@errors[0]] + @errors[1..-1].map(&:downcase) # fix case of all but first
       @errors.join(", ")
-    end
-
-    def project_root=(root_dir)
-      @project_root = root_dir
     end
 
     def exception_class_allowed?(exc)
@@ -314,15 +321,39 @@ module Sentry
       )
     end
 
-    private
-
     def detect_release
-      detect_release_from_env ||
-        detect_release_from_git ||
-        detect_release_from_capistrano ||
-        detect_release_from_heroku
+      return unless sending_allowed?
+
+      self.release ||= ReleaseDetector.detect_release(project_root: project_root, running_on_heroku: running_on_heroku?)
+
+      if running_on_heroku? && release.nil?
+        log_warn(HEROKU_DYNO_METADATA_MESSAGE)
+      end
     rescue => e
       log_error("Error detecting release", e, debug: debug)
+    end
+
+    def csp_report_uri
+      if dsn && dsn.valid?
+        uri = dsn.csp_report_uri
+        uri += "&sentry_release=#{CGI.escape(release)}" if release && !release.empty?
+        uri += "&sentry_environment=#{CGI.escape(environment)}" if environment && !environment.empty?
+        uri
+      end
+    end
+
+    private
+
+    def check_callable!(name, value)
+      unless value == nil || value.respond_to?(:call)
+        raise ArgumentError, "#{name} must be callable (or nil to disable)"
+      end
+    end
+
+    def init_dsn(dsn_string)
+      return if dsn_string.nil? || dsn_string.empty?
+
+      DSN.new(dsn_string)
     end
 
     def excluded_exception?(incoming_exception)
@@ -354,37 +385,6 @@ module Sentry
       nil
     end
 
-    def detect_release_from_heroku
-      return unless running_on_heroku?
-      return if ENV['CI']
-      log_warn(HEROKU_DYNO_METADATA_MESSAGE) && return unless ENV['HEROKU_SLUG_COMMIT']
-
-      ENV['HEROKU_SLUG_COMMIT']
-    end
-
-    def running_on_heroku?
-      File.directory?("/etc/heroku")
-    end
-
-    def detect_release_from_capistrano
-      revision_file = File.join(project_root, 'REVISION')
-      revision_log = File.join(project_root, '..', 'revisions.log')
-
-      if File.exist?(revision_file)
-        File.read(revision_file).strip
-      elsif File.exist?(revision_log)
-        File.open(revision_log).to_a.last.strip.sub(/.*as release ([0-9]+).*/, '\1')
-      end
-    end
-
-    def detect_release_from_git
-      Sentry.sys_command("git rev-parse --short HEAD") if File.directory?(".git")
-    end
-
-    def detect_release_from_env
-      ENV['SENTRY_RELEASE']
-    end
-
     def capture_in_environment?
       return true if enabled_in_current_env?
 
@@ -401,34 +401,22 @@ module Sentry
       end
     end
 
-    def sample_allowed?
-      return true if sample_rate == 1.0
-
-      if Random::DEFAULT.rand >= sample_rate
-        @errors << "Excluded by random sample"
-        false
-      else
-        true
-      end
-    end
-
-    # Try to resolve the hostname to an FQDN, but fall back to whatever
-    # the load name is.
-    def resolve_hostname
-      Socket.gethostname ||
-        Socket.gethostbyname(hostname).first rescue server_name
-    end
-
     def environment_from_env
-      ENV['SENTRY_CURRENT_ENV'] || ENV['SENTRY_ENVIRONMENT'] || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'default'
+      ENV['SENTRY_CURRENT_ENV'] || ENV['SENTRY_ENVIRONMENT'] || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'development'
     end
 
     def server_name_from_env
       if running_on_heroku?
         ENV['DYNO']
       else
-        resolve_hostname
+        # Try to resolve the hostname to an FQDN, but fall back to whatever
+        # the load name is.
+        Socket.gethostname || Socket.gethostbyname(hostname).first rescue server_name
       end
+    end
+
+    def running_on_heroku?
+      File.directory?("/etc/heroku") && !ENV["CI"]
     end
 
     def run_post_initialization_callbacks

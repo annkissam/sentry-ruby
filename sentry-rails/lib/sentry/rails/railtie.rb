@@ -10,18 +10,21 @@ module Sentry
       if defined?(OpenTelemetry::Instrumentation::Rack::Middlewares::TracerMiddleware)
         app.config.middleware.insert_after OpenTelemetry::Instrumentation::Rack::Middlewares::TracerMiddleware, Sentry::Rails::CaptureExceptions
       else
-        app.config.middleware.insert_after ActionDispatch::Executor, Sentry::Rails::CaptureExceptions
+        app.config.middleware.insert_after ActionDispatch::ShowExceptions, Sentry::Rails::CaptureExceptions
       end
 
-      # need to be placed at last to smuggle app exceptions via env
-      app.config.middleware.use(Sentry::Rails::RescuedExceptionInterceptor)
+      # need to place as close to DebugExceptions as possible to intercept most of the exceptions, including those raised by middlewares
+      app.config.middleware.insert_after ActionDispatch::DebugExceptions, Sentry::Rails::RescuedExceptionInterceptor
     end
 
     # because the extension works by registering the around_perform callcack, it should always be ran
     # before the application is eager-loaded (before user's jobs register their own callbacks)
     # See https://github.com/getsentry/sentry-ruby/issues/1249#issuecomment-853871871 for the detail explanation
     initializer "sentry.extend_active_job", before: :eager_load! do |app|
-      extend_active_job if defined?(ActiveJob)
+      ActiveSupport.on_load(:active_job) do
+        require "sentry/rails/active_job"
+        prepend Sentry::Rails::ActiveJobExtensions
+      end
     end
 
     config.after_initialize do |app|
@@ -50,11 +53,6 @@ module Sentry
       Sentry.configuration.trusted_proxies += Array(::Rails.application.config.action_dispatch.trusted_proxies)
     end
 
-    def extend_active_job
-      require "sentry/rails/active_job"
-      ActiveJob::Base.send(:prepend, Sentry::Rails::ActiveJobExtensions)
-    end
-
     def extend_controller_methods
       require "sentry/rails/controller_methods"
       require "sentry/rails/controller_transaction"
@@ -76,12 +74,19 @@ module Sentry
         require 'sentry/rails/breadcrumb/active_support_logger'
         Sentry::Rails::Breadcrumb::ActiveSupportLogger.inject
       end
+
+      if Sentry.configuration.breadcrumbs_logger.include?(:monotonic_active_support_logger)
+        return warn "Usage of `monotonic_active_support_logger` require a version of Rails >= 6.1, please upgrade your Rails version or use another logger" if ::Rails.version.to_f < 6.1
+
+        require 'sentry/rails/breadcrumb/monotonic_active_support_logger'
+        Sentry::Rails::Breadcrumb::MonotonicActiveSupportLogger.inject
+      end
     end
 
     def setup_backtrace_cleanup_callback
       backtrace_cleaner = Sentry::Rails::BacktraceCleaner.new
 
-      Sentry.configuration.backtrace_cleanup_callback = lambda do |backtrace|
+      Sentry.configuration.backtrace_cleanup_callback ||= lambda do |backtrace|
         backtrace_cleaner.clean(backtrace)
       end
     end
