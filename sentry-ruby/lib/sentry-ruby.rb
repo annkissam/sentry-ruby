@@ -36,37 +36,27 @@ module Sentry
 
   THREAD_LOCAL = :sentry_hub
 
-  def self.sdk_meta
-    META
-  end
-
-  def self.utc_now
-    Time.now.utc
-  end
-
   class << self
-    # Returns a hash that contains all the integrations that have been registered to the main SDK.
-    def integrations
-      @integrations ||= {}
+    def exception_locals_tp
+      @exception_locals_tp ||= TracePoint.new(:raise) do |tp|
+        exception = tp.raised_exception
+
+        # don't collect locals again if the exception is re-raised
+        next if exception.instance_variable_get(:@sentry_locals)
+        next unless tp.binding
+
+        locals = tp.binding.local_variables.each_with_object({}) do |local, result|
+          result[local] = tp.binding.local_variable_get(local)
+        end
+
+        exception.instance_variable_set(:@sentry_locals, locals)
+      end
     end
-
-    # Registers the SDK integration with its name and version.
-    def register_integration(name, version)
-      meta = { name: "sentry.ruby.#{name}", version: version }.freeze
-      integrations[name.to_s] = meta
-    end
-  end
-
-  class << self
-    extend Forwardable
-
-    def_delegators :get_current_client, :configuration, :send_event
-    def_delegators :get_current_scope, :set_tags, :set_extras, :set_user, :set_context
 
     attr_accessor :background_worker
 
-    @@registered_patches = []
-
+    ##### Patch Registration #####
+    #
     def register_patch(&block)
       registered_patches << block
     end
@@ -78,12 +68,35 @@ module Sentry
     end
 
     def registered_patches
-      @@registered_patches
+      @registered_patches ||= []
     end
 
+    ##### Integrations #####
+    #
+    # Returns a hash that contains all the integrations that have been registered to the main SDK.
+    def integrations
+      @integrations ||= {}
+    end
+
+    # Registers the SDK integration with its name and version.
+    def register_integration(name, version)
+      meta = { name: "sentry.ruby.#{name}", version: version }.freeze
+      integrations[name.to_s] = meta
+    end
+
+    ##### Method Delegation #####
+    #
+    extend Forwardable
+
+    def_delegators :get_current_client, :configuration, :send_event
+    def_delegators :get_current_scope, :set_tags, :set_extras, :set_user, :set_context
+
+    ##### Main APIs #####
+    #
     def init(&block)
       config = Configuration.new
       yield(config) if block_given?
+      config.detect_release
       apply_patches(config)
       client = Client.new(config)
       scope = Scope.new(max_breadcrumbs: config.max_breadcrumbs)
@@ -91,6 +104,22 @@ module Sentry
       Thread.current.thread_variable_set(THREAD_LOCAL, hub)
       @main_hub = hub
       @background_worker = Sentry::BackgroundWorker.new(config)
+
+      if config.capture_exception_frame_locals
+        exception_locals_tp.enable
+      end
+    end
+
+    # Returns an uri for security policy reporting that's generated from the given DSN
+    # (To learn more about security policy reporting: https://docs.sentry.io/product/security-policy-reporting/)
+    #
+    # It returns nil if
+    #
+    # 1. The SDK is not initialized yet.
+    # 2. The DSN is not provided or is invalid.
+    def csp_report_uri
+      return unless initialized?
+      configuration.csp_report_uri
     end
 
     # Returns the main thread's active hub.
@@ -99,8 +128,8 @@ module Sentry
     end
 
     # Takes an instance of Sentry::Breadcrumb and stores it to the current active scope.
-    def add_breadcrumb(breadcrumb)
-      get_current_hub&.add_breadcrumb(breadcrumb)
+    def add_breadcrumb(breadcrumb, **options)
+      get_current_hub&.add_breadcrumb(breadcrumb, **options)
     end
 
     # Returns the current active hub.
@@ -192,6 +221,9 @@ module Sentry
       get_current_hub&.last_event_id
     end
 
+
+    ##### Helpers #####
+    #
     def sys_command(command)
       result = `#{command} 2>&1` rescue nil
       return if result.nil? || result.empty? || ($CHILD_STATUS && $CHILD_STATUS.exitstatus != 0)
@@ -205,6 +237,14 @@ module Sentry
 
     def logger
       configuration.logger
+    end
+
+    def sdk_meta
+      META
+    end
+
+    def utc_now
+      Time.now.utc
     end
   end
 end

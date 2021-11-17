@@ -22,8 +22,10 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
 
       expect { stack.call(env) }.to raise_error(ZeroDivisionError)
 
-      event = transport.events.last
-      expect(event.to_hash.dig(:request, :url)).to eq("http://example.org/test")
+      event = transport.events.last.to_hash
+      expect(event.dig(:request, :url)).to eq("http://example.org/test")
+      last_frame = event.dig(:exception, :values, 0, :stacktrace, :frames).last
+      expect(last_frame[:vars]).to eq(nil)
     end
 
     it 'captures the exception from rack.exception' do
@@ -83,9 +85,81 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
       expect { stack.call(env) }.to_not raise_error
     end
 
+    context "with config.capture_exception_frame_locals = true" do
+      before do
+        perform_basic_setup do |config|
+          config.capture_exception_frame_locals = true
+        end
+      end
+
+      after do
+        Sentry.exception_locals_tp.disable
+      end
+
+      it 'captures the exception with locals' do
+        app = ->(_e) do
+          a = 1
+          b = 0
+          a / b
+        end
+
+        stack = described_class.new(app)
+
+        expect { stack.call(env) }.to raise_error(ZeroDivisionError)
+
+        event = transport.events.last.to_hash
+        expect(event.dig(:request, :url)).to eq("http://example.org/test")
+        last_frame = event.dig(:exception, :values, 0, :stacktrace, :frames).last
+        expect(last_frame[:vars]).to include({ a: "1", b: "0" })
+      end
+
+      it 'ignores problematic locals' do
+        class Foo
+          def inspect
+            raise
+          end
+        end
+
+        app = ->(_e) do
+          a = 1
+          b = 0
+          f = Foo.new
+          a / b
+        end
+
+        stack = described_class.new(app)
+
+        expect { stack.call(env) }.to raise_error(ZeroDivisionError)
+
+        event = transport.events.last.to_hash
+        expect(event.dig(:request, :url)).to eq("http://example.org/test")
+        last_frame = event.dig(:exception, :values, 0, :stacktrace, :frames).last
+        expect(last_frame[:vars]).to include({ a: "1", b: "0", f: "[ignored due to error]" })
+      end
+
+      it 'truncates lengthy values' do
+        app = ->(_e) do
+          a = 1
+          b = 0
+          long = "*" * 2000
+          a / b
+        end
+
+        stack = described_class.new(app)
+
+        expect { stack.call(env) }.to raise_error(ZeroDivisionError)
+
+        event = transport.events.last.to_hash
+        expect(event.dig(:request, :url)).to eq("http://example.org/test")
+        last_frame = event.dig(:exception, :values, 0, :stacktrace, :frames).last
+        expect(last_frame[:vars]).to include({ a: "1", b: "0", long: "*" * 1024 + "..." })
+      end
+    end
+
     describe "state encapsulation" do
       before do
         Sentry.configure_scope { |s| s.set_tags(tag_1: "don't change me") }
+        Sentry.configuration.breadcrumbs_logger = [:sentry_logger]
       end
 
       it "only contains the breadcrumbs of the request" do

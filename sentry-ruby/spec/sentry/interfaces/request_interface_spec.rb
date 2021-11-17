@@ -59,6 +59,17 @@ RSpec.describe Sentry::RequestInterface do
       end
     end
 
+    context 'with special characters' do
+      let(:additional_headers) { { "HTTP_FOO" => "Tekirda\xC4" } }
+
+      it "doesn't cause any issue" do
+        interface = described_class.build(env: env)
+        json = JSON.generate(interface.to_hash)
+
+        expect(JSON.parse(json)["headers"]).to eq({"Content-Length"=>"0", "Foo"=>"Tekirda�"})
+      end
+    end
+
     context 'with additional env variables' do
       let(:mock) { double }
       let(:env) { { "some.variable" => mock } }
@@ -66,7 +77,7 @@ RSpec.describe Sentry::RequestInterface do
       it 'does not call #to_s for unnecessary env variables' do
         expect(mock).not_to receive(:to_s)
 
-        interface = described_class.build(env: env)
+        described_class.build(env: env)
       end
     end
   end
@@ -133,7 +144,7 @@ RSpec.describe Sentry::RequestInterface do
 
       new_env = env.merge("HTTP_FOO" => "BAR", "rails_object" => obj)
 
-      expect { interface = described_class.build(env: new_env) }.to_not raise_error
+      expect { described_class.build(env: new_env) }.to_not raise_error
     end
   end
 
@@ -208,6 +219,16 @@ RSpec.describe Sentry::RequestInterface do
       interface = described_class.build(env: new_env)
 
       expect(interface.data).to eq("catch me")
+    end
+
+    it "force encodes request body to avoid encoding issue" do
+      new_env = env.merge(::Rack::RACK_INPUT => StringIO.new("あ"))
+
+      interface = described_class.build(env: new_env)
+
+      expect do
+        JSON.generate(interface.to_hash)
+      end.not_to raise_error
     end
 
     it "doesn't remove ip address headers" do
